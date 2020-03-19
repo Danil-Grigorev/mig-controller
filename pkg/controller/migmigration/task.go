@@ -30,7 +30,7 @@ const (
 	ResticRestarted               = "ResticRestarted"
 	QuiesceApplications           = "QuiesceApplications"
 	EnsureQuiesced                = "EnsureQuiesced"
-	ReactivateApplication         = "ReactivateApplication"
+	ReactivateApplications        = "ReactivateApplications"
 	EnsureStageBackup             = "EnsureStageBackup"
 	StageBackupCreated            = "StageBackupCreated"
 	StageBackupFailed             = "StageBackupFailed"
@@ -117,7 +117,7 @@ var CancelItinerary = Itinerary{
 	{phase: Canceling},
 	{phase: EnsureStagePodsDeleted, flags: HasStagePods},
 	{phase: EnsureAnnotationsDeleted, flags: HasPVs},
-	{phase: ReactivateApplication, flags: Quiesce},
+	{phase: ReactivateApplications, flags: Quiesce},
 	{phase: Cancelled},
 	{phase: Completed},
 }
@@ -125,7 +125,7 @@ var CancelItinerary = Itinerary{
 var FailedItinerary = Itinerary{
 	{phase: EnsureStagePodsDeleted, flags: HasStagePods},
 	{phase: EnsureAnnotationsDeleted, flags: HasPVs},
-	{phase: ReactivateApplication, flags: Quiesce},
+	{phase: ReactivateApplications, flags: Quiesce},
 	{phase: Completed},
 }
 
@@ -316,6 +316,13 @@ func (t *Task) Run() error {
 		} else {
 			t.Requeue = PollReQ
 		}
+	case ReactivateApplications:
+		err := t.reactivateApplications()
+		if err != nil {
+			log.Trace(err)
+			return err
+		}
+		t.next()
 	case EnsureStageBackup:
 		_, err := t.ensureStageBackup()
 		if err != nil {
@@ -521,9 +528,6 @@ func (t *Task) Run() error {
 			Message:  CancelledMessage,
 			Durable:  true,
 		})
-		t.next()
-	case ReactivateApplication:
-		// TODO
 		t.next()
 	// Out of tree states - needs to be triggered manually with t.fail(...)
 	case InitialBackupFailed, FinalRestoreFailed, StageBackupFailed, StageRestoreFailed:
