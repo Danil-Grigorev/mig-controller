@@ -92,3 +92,8 @@ func (r *MigMigration) AddErrors(errors []string) {
 		}
 	}
 }
+
+// HasErrors - determine if the migration has failed
+func (r *MigMigration) HasErrors() bool {
+	return len(r.Status.Errors) > 0
+}

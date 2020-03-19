@@ -30,6 +30,7 @@ const (
 	ResticRestarted               = "ResticRestarted"
 	QuiesceApplications           = "QuiesceApplications"
 	EnsureQuiesced                = "EnsureQuiesced"
+	ReactivateApplication         = "ReactivateApplication"
 	EnsureStageBackup             = "EnsureStageBackup"
 	StageBackupCreated            = "StageBackupCreated"
 	StageBackupFailed             = "StageBackupFailed"
@@ -116,7 +117,15 @@ var CancelItinerary = Itinerary{
 	{phase: Canceling},
 	{phase: EnsureStagePodsDeleted, flags: HasStagePods},
 	{phase: EnsureAnnotationsDeleted, flags: HasPVs},
+	{phase: ReactivateApplication, flags: Quiesce},
 	{phase: Cancelled},
+	{phase: Completed},
+}
+
+var FailedItinerary = Itinerary{
+	{phase: EnsureStagePodsDeleted, flags: HasStagePods},
+	{phase: EnsureAnnotationsDeleted, flags: HasPVs},
+	{phase: ReactivateApplication, flags: Quiesce},
 	{phase: Completed},
 }
 
@@ -238,7 +247,7 @@ func (t *Task) Run() error {
 		}
 		if completed {
 			if len(reasons) > 0 {
-				t.failed(InitialBackupFailed, reasons)
+				t.fail(InitialBackupFailed, reasons)
 			} else {
 				t.next()
 			}
@@ -313,7 +322,7 @@ func (t *Task) Run() error {
 			log.Trace(err)
 			return err
 		}
-		t.Requeue = 0
+		t.Requeue = NoReQ
 		t.next()
 	case StageBackupCreated:
 		backup, err := t.ensureStageBackup()
@@ -331,7 +340,7 @@ func (t *Task) Run() error {
 		}
 		if completed {
 			if len(reasons) > 0 {
-				t.failed(StageBackupFailed, reasons)
+				t.fail(StageBackupFailed, reasons)
 			} else {
 				t.next()
 			}
@@ -389,7 +398,7 @@ func (t *Task) Run() error {
 		}
 		if completed {
 			if len(reasons) > 0 {
-				t.failed(StageRestoreFailed, reasons)
+				t.fail(StageRestoreFailed, reasons)
 			} else {
 				t.next()
 			}
@@ -474,7 +483,7 @@ func (t *Task) Run() error {
 		}
 		if completed {
 			if len(reasons) > 0 {
-				t.failed(FinalRestoreFailed, reasons)
+				t.fail(FinalRestoreFailed, reasons)
 			} else {
 				t.next()
 			}
@@ -513,22 +522,12 @@ func (t *Task) Run() error {
 			Durable:  true,
 		})
 		t.next()
-	case StageBackupFailed, StageRestoreFailed:
-		err := t.ensureStagePodsDeleted()
-		if err != nil {
-			log.Trace(err)
-			return err
-		}
-		if !t.keepAnnotations() {
-			err = t.deleteAnnotations()
-			if err != nil {
-				log.Trace(err)
-				return err
-			}
-		}
-		t.Requeue = NoReQ
+	case ReactivateApplication:
+		// TODO
 		t.next()
-	case InitialBackupFailed, FinalRestoreFailed:
+	// Out of tree states - needs to be triggered manually with t.fail(...)
+	case InitialBackupFailed, FinalRestoreFailed, StageBackupFailed, StageRestoreFailed:
+		t.Requeue = NoReQ
 		t.next()
 	case Completed:
 	}
@@ -546,6 +545,8 @@ func (t *Task) init() {
 	t.Requeue = FastReQ
 	if t.canceled() {
 		t.Itinerary = CancelItinerary
+	} else if t.failed() {
+		t.Itinerary = FailedItinerary
 	} else if t.stage() {
 		t.Itinerary = StageItinerary
 	} else {
@@ -564,7 +565,9 @@ func (t *Task) next() {
 		break
 	}
 	if current == -1 {
-		if t.canceled() {
+		if t.failed() {
+			t.Phase = FailedItinerary[0].phase
+		} else if t.canceled() {
 			t.Phase = CancelItinerary[0].phase
 		} else {
 			t.Phase = Completed
@@ -591,8 +594,8 @@ func (t *Task) next() {
 	t.Phase = Completed
 }
 
-// Phase failed.
-func (t *Task) failed(nextPhase string, reasons []string) {
+// Phase fail.
+func (t *Task) fail(nextPhase string, reasons []string) {
 	t.addErrors(reasons)
 	t.Phase = nextPhase
 	t.Owner.AddErrors(t.Errors)
@@ -616,6 +619,11 @@ func (t *Task) addErrors(errors []string) {
 // Migration UID.
 func (t *Task) UID() string {
 	return string(t.Owner.UID)
+}
+
+// Get whether the migration entered a failed state.
+func (t *Task) failed() bool {
+	return t.Owner.HasErrors()
 }
 
 // Get whether the migration is cancelled.
